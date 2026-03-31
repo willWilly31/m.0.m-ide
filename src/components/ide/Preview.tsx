@@ -1,6 +1,6 @@
 import React from 'react';
 import { useFileStore } from '@/stores/fileStore';
-import { Eye, ExternalLink } from 'lucide-react';
+import { Eye } from 'lucide-react';
 
 export default function Preview() {
   const { openFile } = useFileStore();
@@ -55,7 +55,7 @@ export default function Preview() {
       <Eye className="w-10 h-10 text-muted-foreground/30" />
       <p className="text-sm text-muted-foreground">Preview available for HTML & Markdown files</p>
       <p className="text-xs text-muted-foreground/60">
-        For React projects, connect the backend and use <code className="font-mono text-primary">npm run dev</code>
+        Run the fullstack app with <code className="font-mono text-primary">npm run dev:fullstack</code>
       </p>
     </div>
   );
