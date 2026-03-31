@@ -33,3 +33,19 @@ npm run dev:fullstack
 ## Enterprise notes
 
 Lihat detail readiness, kekurangan, dan roadmap enterprise di `ENTERPRISE_WEB_GAP_ANALYSIS.md`.
+
+
+## Provider configuration
+
+Default provider endpoint is OpenAI-compatible:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` (optional)
+- `OPENAI_BASE_URL` (optional, default `https://api.openai.com/v1`)
+
+For OpenRouter, set:
+
+- `OPENAI_API_KEY=<OPENROUTER_API_KEY>`
+- `OPENAI_BASE_URL=https://openrouter.ai/api/v1`
+- `OPENROUTER_SITE_URL` (optional but recommended)
+- `OPENROUTER_APP_NAME` (optional but recommended)

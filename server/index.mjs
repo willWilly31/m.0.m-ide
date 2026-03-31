@@ -5,6 +5,8 @@ const port = Number(process.env.PORT || 8787);
 const requestWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const requestLimit = Number(process.env.RATE_LIMIT_MAX || 120);
 const ipBuckets = new Map();
+const aiBaseUrl = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+const aiProviderName = process.env.AI_PROVIDER || (aiBaseUrl.includes('openrouter.ai') ? 'openrouter' : 'openai-compatible');
 
 const json = (res, statusCode, payload, extraHeaders = {}) => {
   res.writeHead(statusCode, {
@@ -79,12 +81,23 @@ const callOpenAICompatible = async (messages) => {
   const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
   if (!apiKey) return null;
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`,
+  };
+
+  if (aiBaseUrl.includes('openrouter.ai')) {
+    if (process.env.OPENROUTER_SITE_URL) {
+      headers['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL;
+    }
+    if (process.env.OPENROUTER_APP_NAME) {
+      headers['X-Title'] = process.env.OPENROUTER_APP_NAME;
+    }
+  }
+
+  const response = await fetch(`${aiBaseUrl}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       model,
       temperature: 0.2,
@@ -190,7 +203,7 @@ const server = createServer(async (req, res) => {
       json(res, 200, {
         message,
         mode,
-        provider: providerReply ? 'openai-compatible' : 'local-fallback',
+        provider: providerReply ? aiProviderName : 'local-fallback',
         requestId,
         rateLimit: { remaining: rate.remaining, resetAt: rate.resetAt },
       }, { 'X-Request-Id': requestId });
