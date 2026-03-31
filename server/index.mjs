@@ -1,15 +1,41 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 
 const port = Number(process.env.PORT || 8787);
+const requestWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
+const requestLimit = Number(process.env.RATE_LIMIT_MAX || 120);
+const ipBuckets = new Map();
 
-const sendJson = (res, statusCode, payload) => {
+const json = (res, statusCode, payload, extraHeaders = {}) => {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type,X-Request-Id',
+    ...extraHeaders,
   });
   res.end(JSON.stringify(payload));
+};
+
+const getClientIp = (req) => req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+
+const applyRateLimit = (ip) => {
+  const now = Date.now();
+  const bucket = ipBuckets.get(ip) || { count: 0, resetAt: now + requestWindowMs };
+
+  if (now > bucket.resetAt) {
+    bucket.count = 0;
+    bucket.resetAt = now + requestWindowMs;
+  }
+
+  bucket.count += 1;
+  ipBuckets.set(ip, bucket);
+
+  return {
+    allowed: bucket.count <= requestLimit,
+    remaining: Math.max(requestLimit - bucket.count, 0),
+    resetAt: bucket.resetAt,
+  };
 };
 
 const summarizeContext = (text) => {
@@ -27,9 +53,8 @@ const summarizeContext = (text) => {
   };
 };
 
-const buildUltraThinkReply = (lastUserMessage, contextBlob) => {
+const localUltraThinkReply = (lastUserMessage, contextBlob) => {
   const { filePath, signals } = summarizeContext(contextBlob);
-
   return [
     '### Ultra-Think Response',
     `**Focus file:** ${filePath}`,
@@ -49,32 +74,99 @@ const buildUltraThinkReply = (lastUserMessage, contextBlob) => {
   ].join('\n');
 };
 
+const callOpenAICompatible = async (messages) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+  if (!apiKey) return null;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an enterprise-grade software architect and coding copilot. Give concise, production-ready, actionable responses.',
+        },
+        ...messages,
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Provider error ${response.status}: ${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim() || null;
+};
+
+const parseBody = async (req) => {
+  let rawBody = '';
+  for await (const chunk of req) rawBody += chunk;
+  if (!rawBody) return {};
+  return JSON.parse(rawBody);
+};
+
 const server = createServer(async (req, res) => {
+  const requestId = req.headers['x-request-id']?.toString() || randomUUID();
+  const ip = getClientIp(req);
+  const rate = applyRateLimit(ip);
+
+  if (!rate.allowed) {
+    json(res, 429, {
+      error: 'Rate limit exceeded',
+      requestId,
+      retryAfterMs: Math.max(rate.resetAt - Date.now(), 0),
+    }, {
+      'X-Request-Id': requestId,
+      'Retry-After': String(Math.ceil((rate.resetAt - Date.now()) / 1000)),
+    });
+    return;
+  }
+
   if (!req.url || !req.method) {
-    sendJson(res, 400, { error: 'Invalid request.' });
+    json(res, 400, { error: 'Invalid request.', requestId }, { 'X-Request-Id': requestId });
     return;
   }
 
   if (req.method === 'OPTIONS') {
-    sendJson(res, 204, {});
+    json(res, 204, {}, { 'X-Request-Id': requestId });
     return;
   }
 
   if (req.method === 'GET' && req.url === '/api/health') {
-    sendJson(res, 200, { ok: true, service: 'm0m-api', mode: 'ultra-think-ready' });
+    json(res, 200, {
+      ok: true,
+      service: 'm0m-api',
+      mode: process.env.OPENAI_API_KEY ? 'provider+fallback' : 'local-only',
+      requestId,
+    }, { 'X-Request-Id': requestId });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/api/capabilities') {
+    json(res, 200, {
+      webOnly: true,
+      hasExternalProvider: Boolean(process.env.OPENAI_API_KEY),
+      features: ['chat', 'ultra-think', 'health-check', 'rate-limit', 'request-id'],
+      requestId,
+    }, { 'X-Request-Id': requestId });
     return;
   }
 
   if (req.method === 'POST' && req.url === '/api/chat') {
-    let rawBody = '';
-
-    for await (const chunk of req) rawBody += chunk;
-
     let body;
     try {
-      body = rawBody ? JSON.parse(rawBody) : {};
+      body = await parseBody(req);
     } catch {
-      sendJson(res, 400, { error: 'Request body must be valid JSON.' });
+      json(res, 400, { error: 'Request body must be valid JSON.', requestId }, { 'X-Request-Id': requestId });
       return;
     }
 
@@ -83,20 +175,39 @@ const server = createServer(async (req, res) => {
     const lastUserMessage = userMessages[userMessages.length - 1]?.content?.trim();
 
     if (!lastUserMessage) {
-      sendJson(res, 400, { error: 'A user message is required.' });
+      json(res, 400, { error: 'A user message is required.', requestId }, { 'X-Request-Id': requestId });
       return;
     }
 
     const mode = body.mode === 'ultra-think' ? 'ultra-think' : 'default';
-    const message = mode === 'ultra-think'
-      ? buildUltraThinkReply(lastUserMessage, userMessages.map((m) => m.content).join('\n\n'))
-      : `You said: ${String(lastUserMessage).slice(0, 300)}`;
 
-    sendJson(res, 200, { message, mode });
+    try {
+      const providerReply = await callOpenAICompatible(messages);
+      const message = providerReply || (mode === 'ultra-think'
+        ? localUltraThinkReply(lastUserMessage, userMessages.map((m) => m.content).join('\n\n'))
+        : `You said: ${String(lastUserMessage).slice(0, 300)}`);
+
+      json(res, 200, {
+        message,
+        mode,
+        provider: providerReply ? 'openai-compatible' : 'local-fallback',
+        requestId,
+        rateLimit: { remaining: rate.remaining, resetAt: rate.resetAt },
+      }, { 'X-Request-Id': requestId });
+    } catch (error) {
+      const fallbackMessage = localUltraThinkReply(lastUserMessage, userMessages.map((m) => m.content).join('\n\n'));
+      json(res, 200, {
+        message: fallbackMessage,
+        mode: 'ultra-think',
+        provider: 'local-fallback',
+        warning: `Provider unavailable, fallback active: ${String(error.message || error).slice(0, 180)}`,
+        requestId,
+      }, { 'X-Request-Id': requestId });
+    }
     return;
   }
 
-  sendJson(res, 404, { error: 'Route not found.' });
+  json(res, 404, { error: 'Route not found.', requestId }, { 'X-Request-Id': requestId });
 });
 
 server.listen(port, () => {

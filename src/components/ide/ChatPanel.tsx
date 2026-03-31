@@ -9,6 +9,7 @@ export default function ChatPanel() {
   const { openFile } = useFileStore();
   const [input, setInput] = useState('');
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [provider, setProvider] = useState('local-fallback');
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef<AbortController | null>(null);
 
@@ -56,6 +57,7 @@ export default function ChatPanel() {
 
       const data = await resp.json();
       setLatencyMs(Math.round(performance.now() - startedAt));
+      setProvider(data.provider || 'local-fallback');
       updateLastAssistant(data.message || 'No response message returned from API.');
     } catch (err) {
       const aborted = err instanceof DOMException && err.name === 'AbortError';
@@ -75,6 +77,7 @@ export default function ChatPanel() {
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary/20 text-primary flex items-center gap-1"><Zap className="w-3 h-3" />ultra-think</span>
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-[10px] text-muted-foreground">{provider}</span>
           {latencyMs !== null && <span className="text-[10px] text-muted-foreground">{latencyMs}ms</span>}
           <button onClick={clearMessages} className="p-1 hover:bg-secondary rounded transition-colors">
             <Trash2 className="w-3.5 h-3.5 text-muted-foreground" />

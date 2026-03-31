@@ -28,3 +28,8 @@ npm run dev:fullstack
 
 - Chat requests now hit `POST /api/chat`.
 - Health check is available at `GET /api/health`.
+
+
+## Enterprise notes
+
+Lihat detail readiness, kekurangan, dan roadmap enterprise di `ENTERPRISE_WEB_GAP_ANALYSIS.md`.
